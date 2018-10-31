@@ -1,14 +1,11 @@
 use std::io;
-use std::io::Cursor;
-
-use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 
 use actix::Message;
-use bytes::BytesMut;
+use bytes::{BytesMut, BigEndian, ByteOrder};
 use log::info;
 use tokio::codec::{Decoder, Encoder};
 
-const HEADER_SIZE: u16 = 2; // bytes
+const HEADER_SIZE: usize = 2; // bytes
 
 /// Message coming from the network
 #[derive(Debug, Message, Eq, PartialEq, Clone)]
@@ -37,13 +34,20 @@ impl Decoder for P2PCodec {
     /// Method to decode bytes to a request
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         let mut ftb: Option<Self::Item> = None;
-        let msg_len = src.len() as u16;
+        let msg_len = src.len();
         if msg_len > 2 {
-            let mut header_vec = Cursor::new([src.to_vec()[0], src.to_vec()[1]]);
-            let msg_size = header_vec.read_u16::<BigEndian>().unwrap();
+            let msg_size = BigEndian::read_u16(&src[..2]) as usize;
             if msg_len >= (msg_size + HEADER_SIZE) {
-                src.split_to(HEADER_SIZE as usize);
-                ftb = Some(Request::Message(src.split_to(msg_size as usize)));
+                // trim the header from given byte stream
+                // [000 00100] => [00100]
+                //  ^^^
+                //  |-- header
+                src.split_to(HEADER_SIZE);
+                // unwrap message bytes from header-trimmed stream
+                // [00100] => [001]
+                //  ^^^-- message
+                let msg = src.split_to(msg_size);
+                ftb = Some(Request::Message(msg));
             }
         }
         Ok(ftb)
@@ -61,10 +65,10 @@ impl Encoder for P2PCodec {
 
         let Response::Message(bytes) = msg;
 
-        let mut encoded_msg = vec![];
+        let mut encoded_msg = vec![0; 2];
         let header: u16 = bytes.len() as u16;
         // push header with msg len
-        encoded_msg.write_u16::<BigEndian>(header).unwrap();
+        BigEndian::write_u16(&mut encoded_msg, header);
         // push message
         encoded_msg.append(&mut bytes.to_vec());
         // push message to destination
